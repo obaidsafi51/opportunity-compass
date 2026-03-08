@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from routers import api_router, scrape_router, webhook_router
-from services.bright_data import trigger_scrape, normalize_payload
+from services.bright_data import trigger_scrape, get_snapshot_status, download_snapshot, normalize_payload
 from services.data_store import data_store
 
 # ---------------------------------------------------------------------------
@@ -94,6 +94,7 @@ async def on_startup():
 async def _fetch_bright_data_background():
     """
     Background task: call Bright Data directly (notify=false) to get live jobs.
+    If data comes inline, use it. If we get a snapshot_id, poll and download.
     Replaces seed data once results arrive.
     """
     await asyncio.sleep(3)
@@ -105,9 +106,25 @@ async def _fetch_bright_data_background():
             logger.warning("Bright Data returned nothing — keeping seed data")
             return
 
-        # Direct mode returns inline data
+        raw_jobs = None
+
+        # Case 1: Data came back inline
         if "_inline_data" in result:
             raw_jobs = result["_inline_data"]
+            logger.info("Got %d jobs inline from Bright Data", len(raw_jobs))
+
+        # Case 2: Got a snapshot_id — poll until ready then download
+        elif "snapshot_id" in result:
+            snapshot_id = result["snapshot_id"]
+            logger.info("Bright Data returned snapshot_id=%s — polling for completion...", snapshot_id)
+            raw_jobs = await _poll_and_download(snapshot_id)
+
+        else:
+            logger.warning("Unexpected Bright Data response: %s", result)
+            return
+
+        # Store the results
+        if raw_jobs:
             normalized = normalize_payload(raw_jobs)
             if normalized:
                 data_store.replace_all(normalized)
@@ -115,9 +132,38 @@ async def _fetch_bright_data_background():
             else:
                 logger.warning("Got %d raw jobs but 0 normalized — keeping seed data", len(raw_jobs))
         else:
-            logger.warning("Unexpected Bright Data response (no inline data): %s", result)
+            logger.warning("No jobs obtained from Bright Data — keeping seed data")
     except Exception as exc:
         logger.error("Background Bright Data fetch failed: %s — keeping seed data", exc)
+
+
+async def _poll_and_download(snapshot_id: str) -> list | None:
+    """Poll Bright Data snapshot status until ready, then download the data."""
+    max_attempts = 60  # 60 × 10s = 10 minutes
+    for attempt in range(1, max_attempts + 1):
+        await asyncio.sleep(10)
+        status_data = await get_snapshot_status(snapshot_id)
+        if status_data is None:
+            logger.warning("Poll attempt %d/%d — no response", attempt, max_attempts)
+            continue
+
+        status = status_data.get("status", "unknown")
+        logger.info("Poll attempt %d/%d — status: %s", attempt, max_attempts, status)
+
+        if status == "ready":
+            raw_jobs = await download_snapshot(snapshot_id)
+            if raw_jobs:
+                logger.info("Downloaded %d jobs from snapshot %s", len(raw_jobs), snapshot_id)
+                return raw_jobs
+            else:
+                logger.error("Snapshot %s ready but download failed", snapshot_id)
+                return None
+        elif status == "failed":
+            logger.error("Snapshot %s failed: %s", snapshot_id, status_data)
+            return None
+
+    logger.error("Polling timed out after %d attempts for snapshot %s", max_attempts, snapshot_id)
+    return None
 
 
 @app.get("/", tags=["health"])
