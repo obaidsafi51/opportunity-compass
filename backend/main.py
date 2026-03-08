@@ -15,7 +15,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from routers import api_router, scrape_router, webhook_router
-from services.analysis import run_analysis_pipeline
 from services.bright_data import trigger_scrape, trigger_and_poll, normalize_payload
 from services.data_store import data_store
 
@@ -97,7 +96,6 @@ async def on_startup():
                             "Loaded %d seed jobs as interim data while waiting for Bright Data",
                             count,
                         )
-                        asyncio.create_task(run_analysis_pipeline(limit=50))
                 else:
                     # Webhook trigger failed — try full polling workflow in background
                     logger.warning(
@@ -111,7 +109,6 @@ async def on_startup():
                             "Loaded %d seed jobs as interim data while polling runs",
                             count,
                         )
-                        asyncio.create_task(run_analysis_pipeline(limit=50))
             except Exception as exc:
                 logger.error("Bright Data startup fetch failed: %s", exc)
                 _load_seed_fallback()
@@ -122,11 +119,10 @@ async def on_startup():
 
 
 def _load_seed_fallback():
-    """Load seed data and kick off analysis."""
+    """Load seed data as fallback."""
     count = data_store.load_seed_data()
     if count > 0:
         logger.info("Loaded %d seed jobs as fallback", count)
-        asyncio.create_task(run_analysis_pipeline(limit=50))
     else:
         logger.warning("No seed data available — job store is empty")
 
@@ -142,8 +138,6 @@ async def _startup_poll_workflow():
                 "Startup poll workflow complete — %d live jobs loaded, replacing seed data",
                 len(normalized),
             )
-            # Run Gemini analysis on the fresh live data
-            await run_analysis_pipeline(limit=50)
         else:
             logger.warning("Startup poll workflow returned no jobs — keeping seed data")
     except Exception as exc:
