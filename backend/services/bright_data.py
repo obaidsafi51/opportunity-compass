@@ -14,6 +14,7 @@ NormalizedJob schema.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -105,9 +106,21 @@ async def trigger_scrape(
     else:
         params["notify"] = "false"
 
+    # Build the full URL with query params (matching the Bright Data docs exactly)
+    url = f"{SCRAPE_URL}?" + "&".join(f"{k}={v}" for k, v in params.items())
+    headers = {
+        "Authorization": f"Bearer {settings.bright_data_api_key}",
+        "Content-Type": "application/json",
+    }
+
+    logger.info("Bright Data request URL: %s", url)
+    logger.info("Bright Data request body: %s", json.dumps(body))
+
     try:
-        async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(SCRAPE_URL, headers=_auth_headers(), params=params, json=body)
+        async with httpx.AsyncClient(timeout=60) as client:
+            resp = await client.post(url, headers=headers, content=json.dumps(body))
+            logger.info("Bright Data response status: %s", resp.status_code)
+            logger.info("Bright Data response body: %s", resp.text[:500])
             resp.raise_for_status()
             data = resp.json()
             logger.info("Bright Data scrape triggered: %s", data)
@@ -119,8 +132,12 @@ async def trigger_scrape(
             exc.response.text[:500],
         )
         return None
-    except httpx.HTTPError as exc:
-        logger.error("Failed to trigger Bright Data scrape: %s", exc)
+    except Exception as exc:
+        logger.error(
+            "Failed to trigger Bright Data scrape: [%s] %s",
+            type(exc).__name__,
+            exc,
+        )
         return None
 
 
@@ -183,7 +200,7 @@ async def download_snapshot(snapshot_id: str) -> list[dict[str, Any]] | None:
 # ---------------------------------------------------------------------------
 
 async def trigger_and_poll(
-    keyword_search: str = "jobs",
+    keyword_search: str = "Jobs",
     location: str = "Montgomery, AL",
     date_posted: str = "Last 14 days",
     posted_by: str = "Employer",
