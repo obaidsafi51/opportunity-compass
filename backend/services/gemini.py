@@ -20,8 +20,8 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Gemini model to use — 1.5-flash has separate quota pool and generous free limits
-MODEL_NAME = "gemini-1.5-flash"
+# Gemini model to use — 2.0-flash is the current recommended model
+MODEL_NAME = "gemini-2.0-flash"
 
 # System prompt from PRD §9.3
 SYSTEM_PROMPT = """You are an expert workforce development AI agent operating exclusively within the municipal context of Montgomery, Alabama. Your task is to analyze job description text and evaluate suitability for specific workforce personas.
