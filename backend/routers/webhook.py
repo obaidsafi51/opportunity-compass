@@ -42,8 +42,17 @@ async def receive_jobs(request: Request, background_tasks: BackgroundTasks):
                 content={"error": "Invalid payload format"},
             )
 
-        # Normalize and store
+        # Normalize and store — but never wipe the store with an empty payload
         normalized = normalize_payload(raw_jobs)
+
+        if not normalized:
+            logger.warning(
+                "Webhook received %d raw jobs but 0 normalized — ignoring to preserve existing %d jobs",
+                len(raw_jobs),
+                data_store.job_count,
+            )
+            return {"status": "ignored", "reason": "empty payload", "jobs_received": 0}
+
         data_store.replace_all(normalized)
 
         logger.info(

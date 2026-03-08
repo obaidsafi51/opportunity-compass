@@ -51,7 +51,7 @@ def _auth_headers() -> dict[str, str]:
 
 async def trigger_scrape(
     notify_url: str | None = None,
-    keyword_search: str = "jobs",
+    keyword_search: str = "Jobs",
     location: str = "Montgomery, AL",
     date_posted: str = "Last 14 days",
     posted_by: str = "Employer",
@@ -98,6 +98,7 @@ async def trigger_scrape(
         "include_errors": "true",
         "type": "discover_new",
         "discover_by": "keyword",
+        "limit_per_input": "100",
     }
     if notify_url:
         params["notify"] = notify_url
