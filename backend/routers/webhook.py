@@ -11,6 +11,7 @@ import logging
 from fastapi import APIRouter, BackgroundTasks, Request
 from fastapi.responses import JSONResponse
 
+from services.analysis import run_analysis_pipeline
 from services.bright_data import normalize_payload
 from services.data_store import data_store
 
@@ -60,6 +61,9 @@ async def receive_jobs(request: Request, background_tasks: BackgroundTasks):
             len(raw_jobs),
             len(normalized),
         )
+
+        # Run Gemini analysis in the background so the webhook returns quickly
+        background_tasks.add_task(run_analysis_pipeline, limit=50)
 
         return {"status": "ok", "jobs_received": len(normalized)}
 

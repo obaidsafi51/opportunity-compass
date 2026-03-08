@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from routers import api_router, scrape_router, webhook_router
+from services.analysis import run_analysis_pipeline
 from services.bright_data import trigger_scrape, get_snapshot_status, download_snapshot, normalize_payload
 from services.data_store import data_store
 
@@ -129,12 +130,24 @@ async def _fetch_bright_data_background():
             if normalized:
                 data_store.replace_all(normalized)
                 logger.info("Live data loaded — %d jobs, replaced seed data", len(normalized))
+                # Run Gemini analysis on the freshly loaded live jobs
+                await _run_gemini_analysis()
             else:
                 logger.warning("Got %d raw jobs but 0 normalized — keeping seed data", len(raw_jobs))
         else:
             logger.warning("No jobs obtained from Bright Data — keeping seed data")
     except Exception as exc:
         logger.error("Background Bright Data fetch failed: %s — keeping seed data", exc)
+
+
+async def _run_gemini_analysis():
+    """Run Gemini analysis pipeline on current jobs in the store."""
+    try:
+        logger.info("Starting Gemini analysis on %d jobs...", data_store.job_count)
+        await run_analysis_pipeline(limit=50)
+        logger.info("Gemini analysis complete")
+    except Exception as exc:
+        logger.error("Gemini analysis failed: %s — dashboard will show partial data", exc)
 
 
 async def _poll_and_download(snapshot_id: str) -> list | None:
