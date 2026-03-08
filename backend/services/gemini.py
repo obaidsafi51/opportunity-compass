@@ -20,8 +20,8 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-# Gemini model to use — 2.0-flash has much higher free-tier rate limits
-MODEL_NAME = "gemini-2.0-flash"
+# Gemini model to use — 1.5-flash has separate quota pool and generous free limits
+MODEL_NAME = "gemini-1.5-flash"
 
 # System prompt from PRD §9.3
 SYSTEM_PROMPT = """You are an expert workforce development AI agent operating exclusively within the municipal context of Montgomery, Alabama. Your task is to analyze job description text and evaluate suitability for specific workforce personas.
@@ -121,7 +121,7 @@ async def _process_batch_with_retry(
             exc_str = str(exc)
             logger.error("Gemini error (attempt %d/%d): %s", attempt+1, max_retries, exc_str)
             if "429" in exc_str or "quota" in exc_str.lower() or "resource" in exc_str.lower():
-                wait_time = 2 ** attempt * 2  # 2s, 4s, 8s, 16s
+                wait_time = 2 ** attempt * 8  # 8s, 16s, 32s, 64s
                 logger.warning("Gemini API rate limited. Retrying batch in %ds... (Attempt %d/%d)", wait_time, attempt+1, max_retries)
                 await asyncio.sleep(wait_time)
             elif attempt < max_retries - 1:

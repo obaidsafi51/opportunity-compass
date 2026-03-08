@@ -27,7 +27,7 @@ from services.civic_data import fetch_demographics, fetch_growth_signals
 from services.data_store import data_store
 from services.gaps_analysis import get_top_skills, get_training_gaps
 from services.programs_db import get_all_programs
-from services.wage_utils import apply_wage_floor
+from services.wage_utils import apply_wage_floor, parse_hourly_rate
 
 logger = logging.getLogger(__name__)
 
@@ -120,12 +120,12 @@ async def get_opportunities(
         # 1. Filter by Persona Reachability
         filtered = []
         for j in jobs:
-            # We only want analyzed jobs for these specific views if requesting a persona
             if persona == PersonaType.NEET:
-                if getattr(j, "neet_reachable", False) is True:
+                # If Gemini hasn't analyzed yet (None), include the job as a fallback
+                if j.neet_reachable is True or (j.neet_reachable is None and not j.requires_degree and not j.requires_experience_1yr):
                     filtered.append(j)
             elif persona == PersonaType.LTU:
-                if getattr(j, "ltu_reachable", False) is True:
+                if j.ltu_reachable is True or (j.ltu_reachable is None and not j.requires_recent_certification and not j.requires_continuous_work_history):
                     filtered.append(j)
             else:
                 filtered.append(j)
@@ -144,10 +144,17 @@ async def get_opportunities(
                 if not fit:
                     fit = "Matches your current experience level." if persona != PersonaType.GENERAL else ""
                     
+                # Determine wage display: prefer Gemini estimate, fall back to raw salary
+                wage_display = j.estimated_wage_range or j.salary or "Wage not listed"
+                # If the displayed wage parses below $15/hr, show "≥$15/hr (local floor)"
+                parsed = parse_hourly_rate(wage_display)
+                if parsed is not None and parsed < 15.0:
+                    wage_display = "≥$15/hr (living-wage floor)"
+                    
                 grouped[title] = OpportunityCard(
                     job_title=title,
                     fit_reason=fit,
-                    wage_range=j.estimated_wage_range or j.salary or "Unknown",
+                    wage_range=wage_display,
                     training_weeks=j.training_duration_weeks or 0,
                     demand_count=1,
                     barriers=Barriers(

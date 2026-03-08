@@ -57,9 +57,10 @@ def apply_wage_floor(jobs: Sequence[NormalizedJob], floor: float = 15.0) -> list
     filtered = []
     
     for job in jobs:
-        rate = parse_hourly_rate(job.estimated_wage_range)
+        # Try estimated_wage_range first (Gemini-produced), fall back to raw salary
+        rate = parse_hourly_rate(job.estimated_wage_range) or parse_hourly_rate(job.salary)
         if rate is None:
-            # Couldn't parse, include it to be safe
+            # Couldn't parse either field, include it to be safe
             filtered.append(job)
         elif rate >= floor:
             filtered.append(job)
