@@ -38,6 +38,19 @@ POLL_INTERVAL_SECONDS = 10
 POLL_MAX_ATTEMPTS = 60  # 60 × 10s = 10 minutes max wait
 
 
+def _parse_ndjson(text: str) -> list[dict[str, Any]]:
+    """Parse newline-delimited JSON (NDJSON) text into a list of dicts."""
+    results = []
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if line:
+            try:
+                results.append(json.loads(line))
+            except json.JSONDecodeError:
+                logger.warning("Skipping malformed NDJSON line: %s", line[:100])
+    return results
+
+
 def _auth_headers() -> dict[str, str]:
     """Return authorization headers for Bright Data API."""
     return {
@@ -116,15 +129,42 @@ async def trigger_scrape(
     logger.info("Bright Data request URL: %s", url)
     logger.info("Bright Data request body: %s", json.dumps(body))
 
+    # Use longer timeout for notify=false (sync mode returns data inline)
+    timeout = 180 if not notify_url else 60
+
     try:
-        async with httpx.AsyncClient(timeout=60) as client:
+        async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, headers=headers, content=json.dumps(body))
             logger.info("Bright Data response status: %s", resp.status_code)
-            logger.info("Bright Data response body: %s", resp.text[:500])
+            logger.info("Bright Data response body (first 500 chars): %s", resp.text[:500])
             resp.raise_for_status()
-            data = resp.json()
-            logger.info("Bright Data scrape triggered: %s", data)
-            return data
+
+            # Try parsing as standard JSON first (webhook mode returns {"snapshot_id": "..."})
+            try:
+                data = resp.json()
+                # If it's a dict with snapshot_id, it's an async trigger response
+                if isinstance(data, dict) and "snapshot_id" in data:
+                    logger.info("Bright Data scrape triggered (async): %s", data)
+                    return data
+                # If it's a list, it's inline data
+                if isinstance(data, list):
+                    logger.info("Bright Data returned %d jobs inline (JSON array)", len(data))
+                    return {"_inline_data": data}
+                # Single dict that's a job record
+                if isinstance(data, dict) and ("job_title" in data or "company_name" in data):
+                    logger.info("Bright Data returned 1 job inline")
+                    return {"_inline_data": [data]}
+                # Unknown format, return as-is
+                return data
+            except json.JSONDecodeError:
+                # NDJSON format — Bright Data returns one JSON object per line
+                jobs = _parse_ndjson(resp.text)
+                if jobs:
+                    logger.info("Bright Data returned %d jobs inline (NDJSON)", len(jobs))
+                    return {"_inline_data": jobs}
+                logger.warning("Failed to parse Bright Data response as JSON or NDJSON")
+                return None
+
     except httpx.HTTPStatusError as exc:
         logger.error(
             "Bright Data trigger HTTP error %s: %s",
@@ -184,12 +224,18 @@ async def download_snapshot(snapshot_id: str) -> list[dict[str, Any]] | None:
         async with httpx.AsyncClient(timeout=60) as client:
             resp = await client.get(url, headers=_auth_headers(), params=params)
             resp.raise_for_status()
-            data = resp.json()
-            if isinstance(data, list):
-                return data
-            elif isinstance(data, dict):
-                return data.get("data", data.get("results", []))
-            return []
+            try:
+                data = resp.json()
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict):
+                    return data.get("data", data.get("results", []))
+                return []
+            except json.JSONDecodeError:
+                # NDJSON format
+                jobs = _parse_ndjson(resp.text)
+                logger.info("Downloaded %d jobs from snapshot (NDJSON)", len(jobs))
+                return jobs if jobs else []
     except httpx.HTTPError as exc:
         logger.error("Failed to download snapshot %s: %s", snapshot_id, exc)
         return None
@@ -225,6 +271,12 @@ async def trigger_and_poll(
     if not result:
         logger.error("Polling workflow aborted — trigger failed")
         return None
+
+    # Check if Bright Data returned data inline (notify=false can do this)
+    if "_inline_data" in result:
+        raw_jobs = result["_inline_data"]
+        logger.info("Polling workflow skipped — got %d jobs inline from trigger", len(raw_jobs))
+        return raw_jobs
 
     snapshot_id = result.get("snapshot_id")
     if not snapshot_id:

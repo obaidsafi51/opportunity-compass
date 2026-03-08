@@ -15,7 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from config import settings
 from routers import api_router, scrape_router, webhook_router
-from services.bright_data import trigger_scrape, trigger_and_poll, normalize_payload
+from services.bright_data import trigger_scrape, normalize_payload
 from services.data_store import data_store
 
 # ---------------------------------------------------------------------------
@@ -93,40 +93,29 @@ async def on_startup():
 
 async def _fetch_bright_data_background():
     """
-    Background task: trigger Bright Data scrape and replace seed data
-    with live data once it arrives. Runs AFTER the server is already listening.
+    Background task: call Bright Data directly (notify=false) to get live jobs.
+    Replaces seed data once results arrive.
     """
-    # Small delay to ensure server is fully up and reachable for webhooks
     await asyncio.sleep(3)
 
     try:
-        # Try webhook mode — Bright Data will POST results to /webhook/jobs
-        webhook_url = f"{settings.backend_url}/webhook/jobs"
-        logger.info("Triggering Bright Data scrape (webhook → %s)...", webhook_url)
-        result = await trigger_scrape(notify_url=webhook_url)
-        if result:
-            logger.info(
-                "Bright Data scrape triggered successfully. "
-                "snapshot_id=%s — live data will arrive via webhook",
-                result.get("snapshot_id"),
-            )
+        logger.info("Fetching live jobs from Bright Data (direct mode)...")
+        result = await trigger_scrape(notify_url=None)
+        if not result:
+            logger.warning("Bright Data returned nothing — keeping seed data")
             return
 
-        # Webhook trigger failed — fall back to polling workflow
-        logger.warning("Webhook trigger failed. Trying polling workflow...")
-        raw_jobs = await trigger_and_poll()
-        if raw_jobs:
+        # Direct mode returns inline data
+        if "_inline_data" in result:
+            raw_jobs = result["_inline_data"]
             normalized = normalize_payload(raw_jobs)
             if normalized:
                 data_store.replace_all(normalized)
-                logger.info(
-                    "Polling workflow complete — %d live jobs loaded, replaced seed data",
-                    len(normalized),
-                )
+                logger.info("Live data loaded — %d jobs, replaced seed data", len(normalized))
             else:
-                logger.warning("Polling returned data but 0 normalized — keeping seed data")
+                logger.warning("Got %d raw jobs but 0 normalized — keeping seed data", len(raw_jobs))
         else:
-            logger.warning("Polling workflow returned no jobs — keeping seed data")
+            logger.warning("Unexpected Bright Data response (no inline data): %s", result)
     except Exception as exc:
         logger.error("Background Bright Data fetch failed: %s — keeping seed data", exc)
 
