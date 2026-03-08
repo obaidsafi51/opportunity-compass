@@ -100,7 +100,6 @@ async def _process_batch_with_retry(
         temperature=0.1,
         response_mime_type="application/json",
         response_schema=BatchAnalysisResponse,
-        tools=[{"google_search": {}}],  # Enabling Google Search grounding per PRD
     )
 
     for attempt in range(max_retries):
@@ -119,7 +118,9 @@ async def _process_batch_with_retry(
             return parsed.get("jobs", [])
             
         except Exception as exc:
-            if "429" in str(exc) or "quota" in str(exc).lower():
+            exc_str = str(exc)
+            logger.error("Gemini error (attempt %d/%d): %s", attempt+1, max_retries, exc_str)
+            if "429" in exc_str or "quota" in exc_str.lower() or "resource" in exc_str.lower():
                 wait_time = 2 ** attempt * 2  # 2s, 4s, 8s, 16s
                 logger.warning("Gemini API rate limited. Retrying batch in %ds... (Attempt %d/%d)", wait_time, attempt+1, max_retries)
                 await asyncio.sleep(wait_time)
