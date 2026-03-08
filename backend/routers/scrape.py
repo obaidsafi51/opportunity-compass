@@ -50,7 +50,7 @@ async def trigger_bright_data_scrape(
         }
     else:
         # Webhook mode — trigger and let Bright Data call us back
-        webhook_url = f"{settings.frontend_origin}/webhook/jobs"
+        webhook_url = f"{settings.backend_url}/webhook/jobs"
         result = await trigger_scrape(notify_url=webhook_url)
         if result:
             return {

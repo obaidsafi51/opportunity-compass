@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # Bright Data API endpoints
 # ---------------------------------------------------------------------------
 BASE_URL = "https://api.brightdata.com/datasets/v3"
-TRIGGER_URL = f"{BASE_URL}/trigger"
+SCRAPE_URL = f"{BASE_URL}/scrape"
 SNAPSHOT_URL = f"{BASE_URL}/snapshot"       # GET /snapshot/<snapshot_id>
 PROGRESS_URL = f"{BASE_URL}/progress"      # GET /progress/<snapshot_id>
 
@@ -51,17 +51,21 @@ def _auth_headers() -> dict[str, str]:
 
 async def trigger_scrape(
     notify_url: str | None = None,
+    keyword_search: str = "jobs",
     location: str = "Montgomery, AL",
-    days_posted: int = 30,
+    date_posted: str = "Last 14 days",
+    posted_by: str = "Employer",
 ) -> dict[str, Any] | None:
     """
-    Trigger an async scrape job on Bright Data.
+    Trigger an async scrape job on Bright Data (Indeed Jobs dataset).
 
     Args:
-        notify_url: If provided, Bright Data will POST the completed payload
-                    to this URL (webhook mode). If None, use polling mode.
-        location:   Geographic filter for job postings.
-        days_posted: Only include postings from the last N days.
+        notify_url:      If provided, Bright Data will POST the completed payload
+                         to this URL (webhook mode). If None, use polling mode.
+        keyword_search:  Search keyword for Indeed (e.g., "jobs", "nursing", "warehouse").
+        location:        Geographic filter for job postings.
+        date_posted:     Indeed date filter (e.g., "Last 14 days", "Last 7 days").
+        posted_by:       Filter by poster type (e.g., "Employer").
 
     Returns:
         API response dict containing `snapshot_id` (and other metadata),
@@ -71,20 +75,38 @@ async def trigger_scrape(
         logger.warning("Bright Data not configured — skipping scrape trigger")
         return None
 
+    # Build the input row matching the Indeed scraper configuration
+    input_row: dict[str, Any] = {
+        "country": "US",
+        "domain": "indeed.com",
+        "keyword_search": keyword_search,
+        "location": location,
+        "location_radius": "",
+    }
+    if date_posted:
+        input_row["date_posted"] = date_posted
+    if posted_by:
+        input_row["posted_by"] = posted_by
+
     body: dict[str, Any] = {
+        "input": [input_row],
+    }
+
+    # Query parameters — dataset_id and options go here, not in the body
+    params: dict[str, str] = {
         "dataset_id": settings.bright_data_dataset_id,
-        "format": "json",
-        "filters": {
-            "location": location,
-            "days_posted": days_posted,
-        },
+        "include_errors": "true",
+        "type": "discover_new",
+        "discover_by": "keyword",
     }
     if notify_url:
-        body["notify"] = notify_url
+        params["notify"] = notify_url
+    else:
+        params["notify"] = "false"
 
     try:
         async with httpx.AsyncClient(timeout=30) as client:
-            resp = await client.post(TRIGGER_URL, headers=_auth_headers(), json=body)
+            resp = await client.post(SCRAPE_URL, headers=_auth_headers(), params=params, json=body)
             resp.raise_for_status()
             data = resp.json()
             logger.info("Bright Data scrape triggered: %s", data)
@@ -160,8 +182,10 @@ async def download_snapshot(snapshot_id: str) -> list[dict[str, Any]] | None:
 # ---------------------------------------------------------------------------
 
 async def trigger_and_poll(
+    keyword_search: str = "jobs",
     location: str = "Montgomery, AL",
-    days_posted: int = 30,
+    date_posted: str = "Last 14 days",
+    posted_by: str = "Employer",
 ) -> list[dict[str, Any]] | None:
     """
     Complete polling workflow:
@@ -173,7 +197,13 @@ async def trigger_and_poll(
         List of raw job dicts, or None if any step fails.
     """
     # Step 1: Trigger
-    result = await trigger_scrape(notify_url=None, location=location, days_posted=days_posted)
+    result = await trigger_scrape(
+        notify_url=None,
+        keyword_search=keyword_search,
+        location=location,
+        date_posted=date_posted,
+        posted_by=posted_by,
+    )
     if not result:
         logger.error("Polling workflow aborted — trigger failed")
         return None
