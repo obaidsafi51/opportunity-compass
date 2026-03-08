@@ -66,8 +66,8 @@ app.include_router(webhook_router)
 @app.on_event("startup")
 async def on_startup():
     """
-    On startup, attempt to fetch live jobs from Bright Data.
-    Falls back to seed data only if Bright Data is not configured or fails.
+    On startup, load seed data immediately so the server binds the port fast,
+    then trigger Bright Data in the background to replace seed with live data.
     """
     logger.info("Starting Opportunity Navigator API...")
     logger.info("Environment: %s", settings.environment)
@@ -75,73 +75,60 @@ async def on_startup():
     logger.info("Bright Data configured: %s", settings.is_bright_data_configured)
     logger.info("Gemini configured: %s", settings.is_gemini_configured)
 
+    # ── Always load seed data first so the server starts immediately ──
     if data_store.job_count == 0:
-        # ── 1. Try Bright Data first ──────────────────────────────────
-        if settings.is_bright_data_configured:
-            logger.info("Attempting to fetch live jobs from Bright Data...")
-            try:
-                # Try webhook mode first — Bright Data will POST back to /webhook/jobs
-                webhook_url = f"{settings.backend_url}/webhook/jobs"
-                result = await trigger_scrape(notify_url=webhook_url)
-                if result:
-                    logger.info(
-                        "Bright Data scrape triggered (webhook mode). "
-                        "snapshot_id=%s — data will arrive via /webhook/jobs",
-                        result.get("snapshot_id"),
-                    )
-                    # Load seed data temporarily while we wait for the webhook delivery
-                    count = data_store.load_seed_data()
-                    if count > 0:
-                        logger.info(
-                            "Loaded %d seed jobs as interim data while waiting for Bright Data",
-                            count,
-                        )
-                else:
-                    # Webhook trigger failed — try full polling workflow in background
-                    logger.warning(
-                        "Webhook trigger failed. Falling back to polling workflow..."
-                    )
-                    asyncio.create_task(_startup_poll_workflow())
-                    # Load seed data while polling runs
-                    count = data_store.load_seed_data()
-                    if count > 0:
-                        logger.info(
-                            "Loaded %d seed jobs as interim data while polling runs",
-                            count,
-                        )
-            except Exception as exc:
-                logger.error("Bright Data startup fetch failed: %s", exc)
-                _load_seed_fallback()
+        count = data_store.load_seed_data()
+        if count > 0:
+            logger.info("Loaded %d seed jobs for immediate serving", count)
         else:
-            # ── 2. Bright Data not configured — use seed data ─────────
-            logger.warning("Bright Data not configured — loading seed data as fallback")
-            _load_seed_fallback()
+            logger.warning("No seed data available — job store is empty")
 
-
-def _load_seed_fallback():
-    """Load seed data as fallback."""
-    count = data_store.load_seed_data()
-    if count > 0:
-        logger.info("Loaded %d seed jobs as fallback", count)
+    # ── Then kick off Bright Data fetch in background (non-blocking) ──
+    if settings.is_bright_data_configured:
+        logger.info("Scheduling background Bright Data fetch...")
+        asyncio.create_task(_fetch_bright_data_background())
     else:
-        logger.warning("No seed data available — job store is empty")
+        logger.warning("Bright Data not configured — serving seed data only")
 
 
-async def _startup_poll_workflow():
-    """Background task: poll Bright Data for results and replace the store."""
+async def _fetch_bright_data_background():
+    """
+    Background task: trigger Bright Data scrape and replace seed data
+    with live data once it arrives. Runs AFTER the server is already listening.
+    """
+    # Small delay to ensure server is fully up and reachable for webhooks
+    await asyncio.sleep(3)
+
     try:
+        # Try webhook mode — Bright Data will POST results to /webhook/jobs
+        webhook_url = f"{settings.backend_url}/webhook/jobs"
+        logger.info("Triggering Bright Data scrape (webhook → %s)...", webhook_url)
+        result = await trigger_scrape(notify_url=webhook_url)
+        if result:
+            logger.info(
+                "Bright Data scrape triggered successfully. "
+                "snapshot_id=%s — live data will arrive via webhook",
+                result.get("snapshot_id"),
+            )
+            return
+
+        # Webhook trigger failed — fall back to polling workflow
+        logger.warning("Webhook trigger failed. Trying polling workflow...")
         raw_jobs = await trigger_and_poll()
         if raw_jobs:
             normalized = normalize_payload(raw_jobs)
-            data_store.replace_all(normalized)
-            logger.info(
-                "Startup poll workflow complete — %d live jobs loaded, replacing seed data",
-                len(normalized),
-            )
+            if normalized:
+                data_store.replace_all(normalized)
+                logger.info(
+                    "Polling workflow complete — %d live jobs loaded, replaced seed data",
+                    len(normalized),
+                )
+            else:
+                logger.warning("Polling returned data but 0 normalized — keeping seed data")
         else:
-            logger.warning("Startup poll workflow returned no jobs — keeping seed data")
+            logger.warning("Polling workflow returned no jobs — keeping seed data")
     except Exception as exc:
-        logger.error("Startup poll workflow failed: %s — keeping seed data", exc)
+        logger.error("Background Bright Data fetch failed: %s — keeping seed data", exc)
 
 
 @app.get("/", tags=["health"])
