@@ -110,8 +110,8 @@ class OpportunityCard(BaseModel):
 
 class PersonaType(str, Enum):
     GENERAL = "general"
-    LTU = "ltu"
-    NEET = "neet"
+    LTU = "long_term_unemployed"
+    NEET = "neet_youth"
 
 
 # ---------------------------------------------------------------------------
