@@ -25,14 +25,15 @@ router = APIRouter(prefix="/api/scrape", tags=["scrape"])
 @router.post("/trigger")
 async def trigger_bright_data_scrape(
     background_tasks: BackgroundTasks,
-    mode: str = "webhook",
+    mode: str = "direct",
 ):
     """
     Trigger a Bright Data scrape for Montgomery, AL jobs.
 
     Args:
-        mode: Either "webhook" (default, async delivery to /webhook/jobs)
-              or "poll" (sync trigger → poll → download).
+        mode: "direct" (default, synchronous /scraper call — returns data inline),
+              "webhook" (async delivery to /webhook/jobs),
+              or "poll" (trigger → poll → download).
     """
     if not settings.is_bright_data_configured:
         return ResponseEnvelope(
@@ -41,7 +42,40 @@ async def trigger_bright_data_scrape(
             source=DataSource.CACHED,
         )
 
-    if mode == "poll":
+    if mode == "direct":
+        # Synchronous /scraper endpoint — data comes back inline
+        result = await trigger_scrape(notify_url=None)
+        if result and "_inline_data" in result:
+            raw_jobs = result["_inline_data"]
+            normalized = normalize_payload(raw_jobs)
+            if normalized:
+                data_store.replace_all(normalized)
+                logger.info("Direct scrape complete — %d jobs loaded", len(normalized))
+                return {
+                    "status": "complete",
+                    "jobs_loaded": len(normalized),
+                    "message": f"Scrape complete. {len(normalized)} jobs loaded into data store.",
+                }
+            else:
+                return ResponseEnvelope(
+                    error=f"Got {len(raw_jobs)} raw jobs but normalization produced 0 results.",
+                    source=DataSource.CACHED,
+                )
+        elif result and "snapshot_id" in result:
+            # Unexpected for /scraper, but handle gracefully — fall back to polling
+            logger.warning("Got snapshot_id from /scraper — falling back to poll mode")
+            background_tasks.add_task(_poll_workflow)
+            return {
+                "status": "polling_started",
+                "snapshot_id": result.get("snapshot_id"),
+                "message": "Scraper returned async response. Polling for results.",
+            }
+        else:
+            return ResponseEnvelope(
+                error="Failed to scrape. Check Bright Data API credentials and connectivity.",
+                source=DataSource.CACHED,
+            )
+    elif mode == "poll":
         # Run the full polling workflow in the background
         background_tasks.add_task(_poll_workflow)
         return {

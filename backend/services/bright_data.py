@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # Bright Data API endpoints
 # ---------------------------------------------------------------------------
 BASE_URL = "https://api.brightdata.com/datasets/v3"
-SCRAPE_URL = f"{BASE_URL}/scrape"
+SCRAPE_URL = f"{BASE_URL}/scraper"          # synchronous — returns data inline
 SNAPSHOT_URL = f"{BASE_URL}/snapshot"       # GET /snapshot/<snapshot_id>
 PROGRESS_URL = f"{BASE_URL}/progress"      # GET /progress/<snapshot_id>
 
@@ -129,8 +129,8 @@ async def trigger_scrape(
     logger.info("Bright Data request URL: %s", url)
     logger.info("Bright Data request body: %s", json.dumps(body))
 
-    # Use longer timeout for notify=false (sync mode returns data inline)
-    timeout = 180 if not notify_url else 60
+    # /scraper endpoint is synchronous — blocks until data is ready (can take minutes)
+    timeout = 300 if not notify_url else 60
 
     try:
         async with httpx.AsyncClient(timeout=timeout) as client:

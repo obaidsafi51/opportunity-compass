@@ -98,10 +98,10 @@ async def _fetch_bright_data_background():
     If data comes inline, use it. If we get a snapshot_id, poll and download.
     Replaces seed data once results arrive.
     """
-    await asyncio.sleep(3)
+    await asyncio.sleep(1)
 
     try:
-        logger.info("Fetching live jobs from Bright Data (direct mode)...")
+        logger.info("Fetching live jobs from Bright Data (synchronous /scraper endpoint)...")
         result = await trigger_scrape(notify_url=None)
         if not result:
             logger.warning("Bright Data returned nothing — keeping seed data")
